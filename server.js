@@ -18,7 +18,7 @@ const gunzip = promisify(zlib.gunzip);
 const logger = pino({ level: "silent" });
 
 // Sessão local temporária. No Render grátis ela é restaurada do Supabase ao iniciar.
-const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || "auth_info_baileys";
+const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || "/tmp/auth_info_baileys";
 const PORT = process.env.PORT || 3333;
 
 // Supabase Storage: use a SERVICE ROLE KEY somente no servidor.
