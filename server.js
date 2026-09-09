@@ -243,10 +243,49 @@ async function conectar() {
         console.log("\n⚠️ Conexão caiu. Reconectando em 3s...");
         setTimeout(conectar, 3000);
       } else {
-        console.log("\n❌ WhatsApp deslogado. Será necessário escanear um novo QR Code.");
+        console.log("\n❌ WhatsApp deslogado. Apagando sessão antiga e gerando um QR Code novo...");
+        limparSessaoEReconectar();
       }
     }
   });
+}
+
+async function apagarSessaoNoSupabase() {
+  if (!supabaseConfigurado()) return;
+
+  try {
+    const response = await fetch(storageUrl(), {
+      method: "DELETE",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    });
+
+    if (!response.ok && response.status !== 404) {
+      const text = await response.text();
+      throw new Error(`status ${response.status}: ${text}`);
+    }
+
+    console.log("🗑️ Sessão antiga apagada do Supabase.");
+  } catch (error) {
+    console.error("⚠️ Não foi possível apagar a sessão antiga do Supabase:", error.message);
+  }
+}
+
+async function limparSessaoEReconectar() {
+  clearTimeout(backupTimer);
+
+  try {
+    await fs.rm(AUTH_FOLDER, { recursive: true, force: true });
+    await fs.mkdir(AUTH_FOLDER, { recursive: true });
+  } catch (error) {
+    console.error("⚠️ Erro ao limpar sessão local:", error.message);
+  }
+
+  await apagarSessaoNoSupabase();
+
+  setTimeout(conectar, 2000);
 }
 
 // ===================== API HTTP =====================
