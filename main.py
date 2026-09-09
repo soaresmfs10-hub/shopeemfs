@@ -48,7 +48,7 @@ WHATSAPP_GROUP_ID = os.getenv("WHATSAPP_GROUP_ID", "")
 
 SHOPEE_SEARCH_KEYWORD = os.getenv("SHOPEE_SEARCH_KEYWORD", "")
 SHOPEE_PRODUCT_LIMIT = int(os.getenv("SHOPEE_PRODUCT_LIMIT", "5"))
-POST_INTERVAL_SEGUNDOS = int(os.getenv("POST_INTERVAL_SEGUNDOS", "30"))
+POST_INTERVAL_SEGUNDOS = max(int(os.getenv("POST_INTERVAL_SEGUNDOS", "120")), 1)
 
 SHOPEE_VENDAS_MINIMAS = int(os.getenv("SHOPEE_VENDAS_MINIMAS", "1000"))
 SHOPEE_AVALIACAO_MINIMA = float(os.getenv("SHOPEE_AVALIACAO_MINIMA", "4.5"))
@@ -167,36 +167,40 @@ def carregar_historico_supabase():
     print(f"Histórico carregado do Supabase: {total} produtos.")
 
 
-def salvar_produto_postado(produto: dict):
-    """Salva depois que o Telegram confirmou o envio."""
+def salvar_produto_postado(produto: dict) -> bool:
+    """Salva no Supabase depois que o WhatsApp confirmou o envio."""
     if not supabase:
-        raise RuntimeError("Supabase não foi inicializado.")
+        print("⚠️ Supabase não inicializado; histórico não foi salvo.")
+        return False
 
     produto_id = id_do_produto(produto)
-    link = produto.get("offerLink") or ""
+    url = produto.get("offerLink") or ""
+    nome = produto.get("productName", "Produto")
 
     try:
-        supabase.table("produtos_postados").insert({
-            "produto_id": produto_id,
-            "link": link,
-        }).execute()
+        # Usa as colunas criadas no Supabase: produto_id + url.
+        # on_conflict evita erro caso o produto já exista.
+        supabase.table("produtos_postados").upsert(
+            {
+                "produto_id": produto_id,
+                "url": url,
+            },
+            on_conflict="produto_id",
+        ).execute()
 
         postados_cache.add(produto_id)
         print(f"Salvo no Supabase: {produto_id}")
+        return True
 
     except Exception as e:
-        texto = str(e).lower()
-
-        # UNIQUE evita duplicação mesmo em caso de corrida/reexecução.
-        if (
-            "duplicate" in texto
-            or "unique" in texto
-            or "23505" in texto
-        ):
-            postados_cache.add(produto_id)
-            print(f"Produto já estava salvo no Supabase: {produto_id}")
-        else:
-            raise
+        # O WhatsApp já confirmou o envio. Mantemos o ID no cache desta execução
+        # para impedir que um erro de banco cause um flood imediato.
+        postados_cache.add(produto_id)
+        print(
+            f"⚠️ Produto enviado, mas não foi salvo no Supabase: "
+            f"{nome} | {e}"
+        )
+        return False
 
 
 # ===================== SHOPEE =====================
@@ -422,7 +426,7 @@ def enviar_whatsapp(mensagem: str, image_url: str = ""):
 # ===================== PROCESSAMENTO OTIMIZADO =====================
 
 def processar_produto(produto: dict) -> bool:
-    """Tenta enviar UM produto para o WhatsApp."""
+    """Envia UM produto para o WhatsApp e registra o histórico."""
     produto_id = id_do_produto(produto)
 
     if produto_id in postados_cache:
@@ -438,12 +442,18 @@ def processar_produto(produto: dict) -> bool:
             print("⚠️ WhatsApp está desativado; produto não enviado.")
             return False
 
+        # Envia primeiro.
         enviar_whatsapp(
             formatar_mensagem_whatsapp(produto),
             produto.get("imageUrl") or "",
         )
 
-        # Só registra depois que o WhatsApp confirmou o envio.
+        # Marca imediatamente como enviado nesta execução para evitar repetição
+        # caso o Supabase esteja temporariamente indisponível.
+        postados_cache.add(produto_id)
+
+        # Tenta persistir no Supabase, mas não transforma uma falha de banco
+        # em uma nova tentativa imediata no WhatsApp.
         salvar_produto_postado(produto)
 
         print(
@@ -509,7 +519,8 @@ def rodar_uma_vez():
 
             novos += 1
 
-            # POSTA IMEDIATAMENTE.
+            # Envia um produto e aguarda o intervalo configurado
+            # antes de permitir o próximo envio.
             if processar_produto(produto):
                 postados_nesta_rodada += 1
 
@@ -520,8 +531,11 @@ def rodar_uma_vez():
                     )
                     return
 
-                # Pequena pausa entre posts para evitar flood.
-                time.sleep(2)
+                print(
+                    f"⏳ Aguardando {POST_INTERVAL_SEGUNDOS}s "
+                    f"antes da próxima promoção..."
+                )
+                time.sleep(POST_INTERVAL_SEGUNDOS)
 
         print(
             f"Página {pagina}: {validos} passaram no filtro, "
@@ -554,7 +568,7 @@ def rodar_continuamente():
 
         print(
             f"Rodada terminada em {duracao:.1f}s. "
-            f"Aguardando {POST_INTERVAL_SEGUNDOS}s..."
+            f"Aguardando {POST_INTERVAL_SEGUNDOS}s antes de nova busca..."
         )
 
         time.sleep(max(POST_INTERVAL_SEGUNDOS, 1))
