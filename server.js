@@ -18,7 +18,7 @@ const gunzip = promisify(zlib.gunzip);
 const logger = pino({ level: "silent" });
 
 // Sessão local temporária. No Render grátis ela é restaurada do Supabase ao iniciar.
-const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || "/tmp/auth_info_baileys";
+const AUTH_FOLDER = process.env.WHATSAPP_AUTH_FOLDER || "auth_info_baileys";
 const PORT = process.env.PORT || 3333;
 
 // Supabase Storage: use a SERVICE ROLE KEY somente no servidor.
@@ -59,12 +59,9 @@ async function listarArquivos(dir, base = dir) {
 
 async function restaurarSessaoDoSupabase() {
   if (!supabaseConfigurado()) {
-    console.log("ℹ️ Supabase Storage não configurado. A sessão ficará apenas local.");
     await fs.mkdir(AUTH_FOLDER, { recursive: true });
     return false;
   }
-
-  console.log("☁️ Procurando backup da sessão do WhatsApp no Supabase...");
 
   try {
     const response = await fetch(storageUrl(), {
@@ -91,9 +88,6 @@ async function restaurarSessaoDoSupabase() {
         );
 
       if (arquivoNaoExiste) {
-        console.log("ℹ️ Nenhum backup encontrado.");
-        console.log("📱 Será criada uma nova sessão. Escaneie o QR Code no WhatsApp.");
-
         await fs.mkdir(AUTH_FOLDER, { recursive: true });
         return false;
       }
@@ -114,7 +108,6 @@ async function restaurarSessaoDoSupabase() {
     await fs.rm(AUTH_FOLDER, { recursive: true, force: true });
     await fs.mkdir(AUTH_FOLDER, { recursive: true });
 
-    let restored = 0;
     const base = path.resolve(AUTH_FOLDER);
 
     for (const [relative, base64] of Object.entries(backup.files)) {
@@ -126,15 +119,11 @@ async function restaurarSessaoDoSupabase() {
 
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, Buffer.from(base64, "base64"));
-      restored++;
     }
 
-    console.log(`✅ Sessão restaurada do Supabase (${restored} arquivos).`);
     return true;
 
   } catch (error) {
-    console.error("❌ Erro ao restaurar sessão:", error.message);
-
     // Se o arquivo simplesmente ainda não existe,
     // não deve derrubar o serviço.
     if (
@@ -142,7 +131,6 @@ async function restaurarSessaoDoSupabase() {
       error.message.includes("Object not found") ||
       error.message.includes("not_found")
     ) {
-      console.log("ℹ️ Nenhuma sessão salva ainda. Iniciando uma sessão nova.");
       await fs.mkdir(AUTH_FOLDER, { recursive: true });
       return false;
     }
@@ -189,10 +177,8 @@ async function salvarSessaoNoSupabase() {
       const text = await response.text();
       throw new Error(`Falha ao salvar sessão (${response.status}): ${text}`);
     }
-
-    console.log(`☁️ Sessão do WhatsApp salva no Supabase (${files.length} arquivos).`);
   } catch (error) {
-    console.error("⚠️ Não foi possível fazer backup da sessão:", error.message);
+    // Falha silenciosa no backup: não sobrecarregar os logs.
   } finally {
     backupInProgress = false;
   }
@@ -224,14 +210,12 @@ async function conectar() {
 
     if (qr) {
       ultimoQR = qr;
-      console.log("\n📱 ESCANEIE O QR CODE: abra /qr no navegador (o desenho no log fica ilegível).\n");
-      qrcode.generate(qr, { small: true });
+      console.log("QR Code ativo para escanear");
     }
 
     if (connection === "open") {
       conectado = true;
       ultimoQR = null;
-      console.log("\n✅ WHATSAPP CONECTADO! Serviço pronto para receber pedidos de envio.");
       salvarSessaoNoSupabase();
     }
 
@@ -240,10 +224,8 @@ async function conectar() {
       const codigo = lastDisconnect?.error?.output?.statusCode;
 
       if (codigo !== DisconnectReason.loggedOut) {
-        console.log("\n⚠️ Conexão caiu. Reconectando em 3s...");
         setTimeout(conectar, 3000);
       } else {
-        console.log("\n❌ WhatsApp deslogado. Apagando sessão antiga e gerando um QR Code novo...");
         limparSessaoEReconectar();
       }
     }
@@ -266,10 +248,8 @@ async function apagarSessaoNoSupabase() {
       const text = await response.text();
       throw new Error(`status ${response.status}: ${text}`);
     }
-
-    console.log("🗑️ Sessão antiga apagada do Supabase.");
   } catch (error) {
-    console.error("⚠️ Não foi possível apagar a sessão antiga do Supabase:", error.message);
+    // Falha silenciosa: não sobrecarregar os logs.
   }
 }
 
@@ -280,7 +260,7 @@ async function limparSessaoEReconectar() {
     await fs.rm(AUTH_FOLDER, { recursive: true, force: true });
     await fs.mkdir(AUTH_FOLDER, { recursive: true });
   } catch (error) {
-    console.error("⚠️ Erro ao limpar sessão local:", error.message);
+    // Falha silenciosa: não sobrecarregar os logs.
   }
 
   await apagarSessaoNoSupabase();
@@ -318,7 +298,6 @@ app.get("/qr", async (req, res) => {
     const png = await qrcodePng.toBuffer(ultimoQR, { width: 320, margin: 2 });
     res.type("image/png").send(png);
   } catch (erro) {
-    console.log("\n❌ Erro ao gerar imagem do QR:", erro);
     res.status(500).send("Falha ao gerar QR code.");
   }
 });
@@ -333,7 +312,6 @@ app.get("/grupos", async (req, res) => {
     const lista = Object.entries(grupos).map(([id, grupo]) => ({ id, nome: grupo.subject }));
     res.json({ grupos: lista });
   } catch (erro) {
-    console.log("\n❌ Erro ao listar grupos:", erro);
     res.status(500).json({ erro: "Falha ao listar grupos." });
   }
 });
@@ -356,24 +334,15 @@ app.post("/send", async (req, res) => {
       await sock.sendMessage(group_id, { text: message });
     }
 
-    const preview = message.length > 80 ? message.slice(0, 80) + "..." : message;
-    console.log(`\n🎉 MENSAGEM ENVIADA`);
-    console.log(`📱 Grupo: ${group_id}`);
-    console.log(`📝 Conteúdo: ${preview}`);
-    console.log(`🖼️ Foto: ${image_url ? "enviada" : "não enviada"}`);
     res.json({ ok: true });
   } catch (erro) {
-    console.log("\n❌ ERRO ao enviar mensagem:", erro);
     res.status(500).json({ erro: "Falha ao enviar mensagem.", detalhe: String(erro) });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 API do WhatsApp rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => {});
 
 async function shutdown() {
-  console.log("\n💾 Encerrando: salvando sessão no Supabase...");
   clearTimeout(backupTimer);
   await salvarSessaoNoSupabase();
   process.exit(0);
@@ -383,7 +352,6 @@ process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);
 
 (async () => {
-  console.log("🚀 Iniciando serviço WhatsApp...");
   await restaurarSessaoDoSupabase();
   await conectar();
 
