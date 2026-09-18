@@ -16,6 +16,7 @@ import time
 import hashlib
 import re
 import unicodedata
+import threading
 
 import requests
 from dotenv import load_dotenv
@@ -82,6 +83,11 @@ supabase: Client | None = None
 # Cache local em memória dos produtos que já foram enviados.
 # O histórico permanente continua no Supabase.
 postados_cache = set()
+
+# Controle global de intervalo entre envios.
+# O valor vem do .env: POST_INTERVAL_SEGUNDOS.
+ultimo_envio_monotonic = None
+envio_lock = threading.Lock()
 
 
 # ===================== CONFIGURAÇÃO =====================
@@ -380,7 +386,28 @@ def formatar_mensagem_whatsapp(produto: dict) -> str:
     return "\n\n".join(partes)
 
 
+def esperar_intervalo_envio():
+    """Garante o intervalo configurado no .env entre os envios."""
+    global ultimo_envio_monotonic
+
+    with envio_lock:
+        intervalo = max(float(POST_INTERVAL_SEGUNDOS), 0.0)
+
+        if ultimo_envio_monotonic is not None:
+            decorrido = time.monotonic() - ultimo_envio_monotonic
+            restante = intervalo - decorrido
+
+            if restante > 0:
+                time.sleep(restante)
+
+        # Marca imediatamente antes da requisição de envio.
+        ultimo_envio_monotonic = time.monotonic()
+
+
 def enviar_whatsapp(mensagem: str, image_url: str = ""):
+    # O intervalo é controlado aqui, no ponto real do envio.
+    esperar_intervalo_envio()
+
     url = f"{WHATSAPP_SERVICE_URL}/send"
 
     resposta = requests.post(
@@ -474,8 +501,7 @@ def rodar_uma_vez():
                 if postados_nesta_rodada >= limite_posts:
                     return
 
-                # Pequena pausa entre posts para evitar flood.
-                time.sleep(2)
+                # O intervalo entre posts é controlado por POST_INTERVAL_SEGUNDOS no .env.
 
         if not page_info.get("hasNextPage"):
             break
